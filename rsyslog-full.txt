@@ -1,0 +1,81 @@
+input {
+  file {
+    id => "all"
+    path => ["/var/log/*.log"]
+    exclude => ["/var/log/nginx*"]
+    mode => ["tail"]
+    tags => [ "all" ]
+  }
+}
+input {
+  file {
+    id => "nginx"
+    path => ["/var/log/nginx/nginx-access-default.log"]
+    mode => ["tail"]
+    tags => [ "access", "nginx" ]
+    codec => "plain"
+  }
+}
+filter {
+  if "/var/log/fail2ban-default.log" in [path] {
+    grok {
+      match => { "message" => "%{TIMESTAMP_ISO8601:timestamp},%{INT:fail2ban_digit} %{WORD:log_src}.%{WORD:src_action} *\[%{INT:fail2ban_digit2}\]: %{LOGLEVEL:loglevel} *\[%{NOTSPACE:service}\] %{WORD:ban_status} %{IP:clientip}"
+      add_tag => [ "f2b" ]
+      remove_field => [ "fail2ban_digit", "fail2ban_digit2" ]
+      }
+    }
+    geoip {
+      source => "clientip"
+    }
+    mutate {
+      convert => [ "[geoip][coordinates]", "float" ]
+    }
+  }
+  if "/var/log/sshd.log" in [path] {
+    grok {
+      match => {
+         "message" => [
+           "Received disconnect from %{IP:rip} port %{INT:port}:11: Bye Bye \[%{WORD:auth_level_at_disconnect}\]",
+           "Failed password for invalid user %{USERNAME:sshd_usernames} from %{IP:rip} port %{INT:rport} %{NOTSPACE:ssh_vers}"
+          ]
+      }
+      add_tag => [ "sshd" ]
+      tag_on_failure => "_grokparsefailure_ssh"
+    }
+    if "_grokparsefailure_ssh" in [tags] {
+       mutate {
+           remove_tag => [ "_grokparsefailure_ssh" ]
+       }
+    }
+  }
+  if "nginx" in [tags] {
+    grok {
+      match => { "message" => "%{SYSLOGTIMESTAMP:syslog_timestamp} %{HOSTNAME:rhost} %{NOTSPACE:log_src}: %{GREEDYDATA:message}" }
+      overwrite => [ "message" ]
+    }
+    json {
+      source => "message" 
+    }
+    mutate {
+      convert => {
+         "time_local" => "string"
+         "remote_addr" => "string"
+         "remote_user" => "string"
+         "request" => "string"
+         "status" => "integer"
+         "body_bytes_sent" => "integer"
+         "request_time" => "integer_eu"
+         "http_referrer" => "string"
+         "http_user_agent" => "string"
+         "request_uri" => "string"
+         "server_port" => "integer"
+         "request_method" => "string"
+      }
+    }
+  }
+}
+output {
+  elasticsearch {
+    hosts => ["localhost:9200"]
+  }
+}
